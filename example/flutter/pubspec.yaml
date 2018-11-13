@@ -15,7 +15,8 @@ dev_dependencies:
     sdk: flutter
 
   mqtt_client:
-    path: ../
+    path: ../../../mqtt_client
+  connectivity: ^0.3.2
 
 flutter:
   uses-material-design: true

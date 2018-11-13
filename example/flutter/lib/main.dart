@@ -1,10 +1,12 @@
 import 'dart:async';
-
+import 'dart:io';
 import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
 import 'package:mqtt_client/mqtt_client.dart' as mqtt;
 import 'package:mqtt_client_example/models/message.dart';
 import 'package:mqtt_client_example/dialogs/send_message.dart';
+import 'package:connectivity/connectivity.dart';
+import 'package:flutter/services.dart';
 
 void main() => runApp(MyApp());
 
@@ -14,10 +16,15 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> {
+
+  String _internetConnectionStatus = 'Unknown';
+  final Connectivity _connectivity = Connectivity();
+  StreamSubscription<ConnectivityResult> _connectivitySubscription;
+
   PageController _pageController;
   int _page = 0;
 
-  String broker = 'test.mosquitto.org';
+  String broker = '0.tcp.ngrok.io';
   mqtt.MqttClient client;
   mqtt.ConnectionState connectionState;
 
@@ -29,6 +36,42 @@ class _MyAppState extends State<MyApp> {
   List<Message> messages = <Message>[];
   ScrollController messageController = ScrollController();
 
+  @override
+  void initState(){
+    super.initState();
+    _pageController = PageController();
+    initConnectivity();
+    _connectivitySubscription =
+        _connectivity.onConnectivityChanged.listen((ConnectivityResult result) {
+          setState(() {
+            _internetConnectionStatus = result.toString();
+            if(_internetConnectionStatus != "ConnectivityResult.none"){
+              _connect();
+            }
+          });
+        });
+  }
+
+  bool disconnected;
+
+  @override
+  void dispose() {
+    _pageController = PageController();
+    _connectivitySubscription.cancel();
+    subscription?.cancel();
+    super.dispose();
+  }
+
+  void Ttimer() async {
+    do{
+      await _connect().catchError((e) async {
+        print(e);
+        print("not connecting");
+        await _connect();
+      });
+    }while(disconnected);
+  }
+  
   @override
   Widget build(BuildContext context) {
     IconData connectionStateIcon;
@@ -123,6 +166,29 @@ class _MyAppState extends State<MyApp> {
     );
   }
 
+  // Platform messages are asynchronous, so we initialize in an async method.
+  Future<Null> initConnectivity() async {
+    String connectionStatus;
+    // Platform messages may fail, so we use a try/catch PlatformException.
+    try {
+      connectionStatus = (await _connectivity.checkConnectivity()).toString();
+    } on PlatformException catch (e) {
+      print(e.toString());
+      connectionStatus = 'Failed to get connectivity.';
+    }
+
+    // If the widget was removed from the tree while the asynchronous platform
+    // message was in flight, we want to discard the reply rather than calling
+    // setState to update our non-existent appearance.
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _internetConnectionStatus = connectionStatus;
+    });
+  }
+
   Column _buildBrokerPage(IconData connectionStateIcon) {
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
@@ -143,13 +209,13 @@ class _MyAppState extends State<MyApp> {
           child: Text(client?.connectionState == mqtt.ConnectionState.connected
               ? 'Disconnect'
               : 'Connect'),
-          onPressed: () {
+          onPressed: _internetConnectionStatus != "ConnectivityResult.none" ? () {
             if (client?.connectionState == mqtt.ConnectionState.connected) {
               _disconnect();
             } else {
               _connect();
             }
-          },
+          } : null,
         ),
       ],
     );
@@ -216,18 +282,6 @@ class _MyAppState extends State<MyApp> {
     );
   }
 
-  @override
-  void dispose() {
-    subscription?.cancel();
-    super.dispose();
-  }
-
-  @override
-  void initState() {
-    _pageController = PageController();
-    super.initState();
-  }
-
   List<Widget> _buildMessageList() {
     return messages
         .map((Message message) => Card(
@@ -275,7 +329,7 @@ class _MyAppState extends State<MyApp> {
         .toList();
   }
 
-  void _connect() async {
+  Future _connect() async {
     /// First create a client, the client is constructed with a broker name, client identifier
     /// and port if needed. The client identifier (short ClientId) is an identifier of each MQTT
     /// client connecting to a MQTT broker. As the word identifier already suggests, it should be unique per broker.
@@ -286,6 +340,7 @@ class _MyAppState extends State<MyApp> {
     /// of 1883 is used.
     /// If you want to use websockets rather than TCP see below.
     client = mqtt.MqttClient(broker, '');
+    client.port = 16207;
 
     /// A websocket URL must start with ws:// or wss:// or Dart will throw an exception, consult your websocket MQTT broker
     /// for details.
@@ -324,9 +379,8 @@ class _MyAppState extends State<MyApp> {
     /// never send malformed messages.
     try {
       await client.connect();
-    } catch (e) {
-      print(e);
-      _disconnect();
+    } on SocketException catch(e) {
+      throw e;
     }
 
     /// Check if we are connected
@@ -334,6 +388,7 @@ class _MyAppState extends State<MyApp> {
       print('MQTT client connected');
       setState(() {
         connectionState = client.connectionState;
+        disconnected = false;
       });
     } else {
       print('ERROR: MQTT client connection failed - '
@@ -360,6 +415,10 @@ class _MyAppState extends State<MyApp> {
       subscription = null;
     });
     print('MQTT client disconnected');
+    setState(() {
+      disconnected = true;
+    });
+    Ttimer();
   }
 
   void _onMessage(List<mqtt.MqttReceivedMessage> event) {
